@@ -1,0 +1,94 @@
+#! /bin/bash 
+set -e
+set -u
+
+HOST=localhost
+PORT=27001
+USER=admin
+PASS=pass
+
+outpath="/tmp/backup/$(date +%Y/%m/%d)"
+is_master() {
+  mongo "$HOST" --port $PORT --quiet --eval 'db.isMaster().ismaster'
+}
+
+log() {
+  echo "$@" 2>&1
+}
+
+mkdir -p "$outpath"
+
+if [ $# -eq 0 ]; then
+  log "Starting as a full backup procedure"
+  log "Check if we are on the Primary"
+  is_master="$(is_master)"
+  if [ "$is_master" = "true" ]; then
+    log "This is the Primary node, stopping backup process"
+    exit 0
+  elif [ "$is_master" = "false" ]; then
+    log "This is the Secondary node, launching backup process"
+    if [ ! -d "$outpath/full" ]; then
+      set +e
+      mongodump --quiet --host "$HOST" --port "$PORT" \
+        --username "$USER" --password "$PASS" \
+        --authenticationDatabase admin --gzip --out $outpath/full
+      retc="$?"
+      set -e
+      if [ $retc -eq 0 ]; then
+        log "Full backup have been done successfully"
+      else
+        log "Full backup failed"
+      fi
+    else 
+      log "A full backup have already been done, move it if you want to recreate one"
+    fi
+  else
+    log "Connection problem, please check variables"
+    exit 1
+  fi
+elif [ $# -gt 0 ]; then
+  if [ "$1" = "--help" ]; then
+    log "This script will run a backup of your db running on your secondary mongodb node only"
+    log "If you launch this script without parameters it will launch a full backup of all databases"
+    log "If you want to launch this script to do a backup of only one databases just set the name of the database as a parameter"
+    log "eg : $(basename "$0") test"
+    exit 0
+  fi
+  db="$1"
+  log "Starting as per DB backup procedure"
+  log "Check if we are on the Primary"
+  is_master="$(is_master)"
+  if [ "$is_master" = "true" ]; then
+    log "This is the Primary node, stopping backup process"
+    exit 0
+  elif [ "$is_master" = "false" ]; then
+    log "This is the Secondary node, launching backup process"
+    if [ ! -d $outpath/perdb ]; then
+      set +e
+      mongodump --quiet --host "$HOST" --port "$PORT" \
+        --username "$USER" --password "$PASS" \
+        --db "$db" \
+        --authenticationDatabase admin --gzip --out "$outpath/perdb"
+      retc="$?"
+      set -e
+      if [ $retc -eq 0 ]; then
+        log "Per DB backup have been done successfully"
+      else
+        log "Per DB backup failed"
+      fi
+    else
+      log "A PerDB backup have already been done, move it if you want to recreate one"
+    fi
+  else
+    log "Connection problem, please check variables"
+    exit 1
+  fi
+fi
+
+## cleanup ##
+
+log "Cleanup backup older than 15 days"
+
+find /tmp/backup/* -daystart -mtime 15 -delete
+
+log "Done"
